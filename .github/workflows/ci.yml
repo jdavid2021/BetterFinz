@@ -1,0 +1,193 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  backend:
+    name: Backend quality and unit tests
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: backend/pyproject.toml
+      - name: Install backend
+        run: python -m pip install --upgrade pip && python -m pip install -e ".[dev]"
+      - name: Ruff
+        run: ruff check .
+      - name: Mypy
+        run: mypy app
+      - name: Pytest
+        run: pytest -m "not postgres"
+
+  backend-postgres:
+    name: PostgreSQL migration and integration tests
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: betterfinz_test
+          POSTGRES_USER: betterfinz
+          POSTGRES_PASSWORD: betterfinz-ci
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U betterfinz -d betterfinz_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+    env:
+      DATABASE_URL: postgresql+psycopg://betterfinz:betterfinz-ci@127.0.0.1:5432/betterfinz_test
+      TEST_DATABASE_URL: postgresql+psycopg://betterfinz:betterfinz-ci@127.0.0.1:5432/betterfinz_test
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: backend/pyproject.toml
+      - name: Install backend
+        run: python -m pip install --upgrade pip && python -m pip install -e ".[dev]"
+      - name: Validate migration graph
+        run: test "$(alembic heads | wc -l)" -eq 1
+      - name: Exercise migrations
+        run: |
+          alembic upgrade head
+          alembic downgrade base
+          alembic upgrade head
+      - name: Run PostgreSQL integration tests
+        run: pytest -m postgres
+
+  frontend:
+    name: Frontend quality and build
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.11.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: pnpm
+          cache-dependency-path: frontend/pnpm-lock.yaml
+      - name: Install frontend
+        run: pnpm install --frozen-lockfile
+      - name: ESLint
+        run: pnpm lint
+      - name: TypeScript
+        run: pnpm typecheck
+      - name: Vitest
+        run: pnpm test
+      - name: Build
+        run: pnpm build
+        env:
+          SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
+          SENTRY_ORG: ${{ vars.SENTRY_ORG }}
+          SENTRY_PROJECT: ${{ vars.SENTRY_PROJECT }}
+          SENTRY_RELEASE: ${{ github.sha }}
+          NEXT_PUBLIC_SENTRY_RELEASE: ${{ github.sha }}
+          SENTRY_DSN: ${{ vars.FRONTEND_SENTRY_DSN }}
+          NEXT_PUBLIC_SENTRY_DSN: ${{ vars.FRONTEND_SENTRY_DSN }}
+          SENTRY_ENVIRONMENT: ci
+          NEXT_PUBLIC_SENTRY_ENVIRONMENT: ci
+
+  e2e:
+    name: Full-stack Playwright
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: betterfinz_e2e
+          POSTGRES_USER: betterfinz
+          POSTGRES_PASSWORD: betterfinz-ci
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U betterfinz -d betterfinz_e2e"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 12
+    env:
+      CI: "true"
+      DATABASE_URL: postgresql+psycopg://betterfinz:betterfinz-ci@127.0.0.1:5432/betterfinz_e2e
+      REDIS_URL: redis://127.0.0.1:6379/0
+      SECRET_KEY: ci-only-secret-key-with-at-least-32-characters
+      FRONTEND_ORIGIN: http://127.0.0.1:3000
+      PUBLIC_API_URL: http://127.0.0.1:8000
+      NEXT_PUBLIC_API_URL: http://127.0.0.1:8000
+      PLAYWRIGHT_BASE_URL: http://127.0.0.1:3000
+      PLAYWRIGHT_API_URL: http://127.0.0.1:8000
+      TRUSTED_HOSTS: localhost,127.0.0.1
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: backend/pyproject.toml
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.11.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: pnpm
+          cache-dependency-path: frontend/pnpm-lock.yaml
+      - name: Install backend
+        working-directory: backend
+        run: python -m pip install --upgrade pip && python -m pip install -e ".[dev]"
+      - name: Install frontend
+        working-directory: frontend
+        run: pnpm install --frozen-lockfile
+      - name: Install Chromium
+        working-directory: frontend
+        run: pnpm exec playwright install --with-deps chromium
+      - name: Migrate database
+        working-directory: backend
+        run: alembic upgrade head
+      - name: Run Playwright
+        working-directory: frontend
+        run: pnpm e2e:ci
+      - name: Upload Playwright artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-results
+          path: |
+            frontend/playwright-report
+            frontend/test-results
+          if-no-files-found: ignore
+          retention-days: 14

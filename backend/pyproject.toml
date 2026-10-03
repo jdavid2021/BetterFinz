@@ -1,0 +1,34 @@
+[project]
+name = "betterfinz-api"
+version = "0.1.0"
+requires-python = ">=3.12"
+dependencies = [
+  "fastapi==0.115.12", "uvicorn[standard]==0.34.2", "sqlalchemy==2.0.40",
+  "psycopg[binary]==3.2.9", "alembic==1.15.2", "pydantic-settings==2.9.1",
+  "pwdlib[argon2]==0.2.1", "python-multipart==0.0.20", "email-validator==2.2.0", "openpyxl==3.1.5", "pypdf==5.5.0", "pypdfium2==4.30.0", "pytesseract==0.3.13", "Pillow==11.3.0",
+  "celery[redis]==5.6.3", "redis==5.2.1", "cryptography==50.0.0", "webauthn==3.0.0",
+  "sentry-sdk[fastapi]>=2.0,<3", "prometheus-client>=0.20,<1"
+]
+[project.optional-dependencies]
+dev = ["pytest==8.3.5", "httpx==0.28.1", "ruff==0.11.8", "mypy==1.15.0"]
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+markers = [
+  "postgres: tests that require a migrated PostgreSQL database",
+]
+[tool.ruff]
+line-length = 100
+[tool.ruff.lint]
+select = ["F"]
+ignore = ["F401"]
+[tool.mypy]
+python_version = "3.12"
+strict = false
+check_untyped_defs = true
+ignore_missing_imports = true
+disable_error_code = ["attr-defined", "assignment", "misc", "operator", "no-untyped-def", "type-arg", "arg-type", "import-untyped"]
+plugins = ["pydantic.mypy"]
+
+[tool.setuptools.packages.find]
+include = ["app*"]
